@@ -1,0 +1,314 @@
+#!/usr/bin/env node
+
+/**
+ * Module dependencies.
+ */
+
+var app = require('../app');
+var debug = require('debug')('prueba:server');
+var http = require('http');
+
+/**
+ * Get port from environment and store in Express.
+ */
+
+var port = normalizePort(process.env.PORT || '3000');
+app.set('port', port);
+
+/**
+ * Create HTTP server.
+ */
+
+var server = http.createServer(app);
+
+/**
+ * Listen on provided port, on all network interfaces.
+ */
+
+server.listen(port);
+server.on('error', onError);
+server.on('listening', onListening);
+
+var io = require('socket.io')(server);
+
+/** Chatroom */
+var users =[];
+var numUsers = 0;
+var usuariosconectados=[];
+var usuariosporrom=[];
+var rooms=[];
+var Chat = require('../models/chat').Chat;
+var Room = require('../models/room').Room;
+
+io.on('connection', function (socket) {
+    var addedUser = false;
+
+    /**
+     * cuando el cliente emite 'conexion' empieza el intercambio de mensajes
+     */
+
+   socket.on('conexion',function(data){
+        var index = users.indexOf(data.username);
+        if (index<0) {
+            usuariosconectados.push(data.username);
+            users.push(data.username);
+            console.log("ENTRA NIERI "+data.username);
+            io.emit('actualizar partidas',{'usuarios':usuariosconectados,'rooms':rooms,'cantidadusers':usuariosconectados.length,'cantidadrooms':rooms.length});
+        }
+        else {
+            io.emit('actualizar partidas', {
+                'usuarios': usuariosconectados,
+                'rooms': rooms,
+                'cantidadusers': usuariosconectados.length,
+                'cantidadrooms': rooms.length
+            });
+        }
+    });
+
+    socket.on('sincronizar set',function(data){
+        socket.emit('iniciar',{'username':data.user,'nombreroom':data.rom});
+    });
+
+    /**
+     * chequea que no exista el room cuando se hace un 'new game'
+     */
+
+    socket.on('existe-room', function (data) {
+        var index = rooms.indexOf(data.nombreroom);
+
+        if (index <= -1) { //no existe
+            socket.emit('sync-game', {'alias': data.alias, 'nombreroom': data.nombreroom});
+        }
+    });
+
+    /**
+     * chequea que si exista el room cuando se hace un 'join game'
+     */
+
+    socket.on('same-room', function (data) {
+        var index = rooms.indexOf(data.nombreroom);
+
+        if (index > -1) { // existe
+            socket.emit('sync-join', {'alias': data.alias, 'nombreroom': data.nombreroom});
+        }
+    });
+
+    /**
+     * una vez que se crea el room, se agrega el socket que lo hizo y se manda a actualizar el lobby
+     */
+
+    socket.on('new game', function (data) {
+
+        var index = usuariosconectados.indexOf(data.alias);
+        if (index > -1) {
+            usuariosconectados.splice(index, 1);
+        }
+
+        socket.join(data.nombreroom);
+        rooms.push(data.nombreroom);
+        usuariosporrom[data.nombreroom]=1;
+        data.tipo="new room";
+        data.username = data.alias;
+        saveRoom(data);
+        io.emit('actualizar partidas', {'rooms': rooms, 'usuarios': usuariosconectados, 'cantidadrooms': rooms.length, 'cantidadusers': usuariosconectados.length});
+
+        io.to(socket.id).emit('set room', {'rom': data.nombreroom,'username':data.alias}); //emitir al usuario que acaba de crear este room, el nombre del mismo asi despues lo puede usar el chat
+    });
+
+    /**
+     * una vez que se une al room, se agrega el socket que se unio y se manda a actualizar el lobby
+     */
+
+    socket.on('join game', function (data){
+
+        var index = usuariosconectados.indexOf(data.user);
+        if (index > -1) {
+            usuariosconectados.splice(index, 1);
+        }
+        data.tipo="join room";
+        data.username = data.user;
+        saveRoom(data);
+        usuariosporrom[data.nombreroom]++;
+        io.emit('actualizar partidas', {'rooms': rooms, 'usuarios': usuariosconectados, 'cantidadrooms': rooms.length, 'cantidadusers': usuariosconectados.length});
+
+        io.to(socket.id).emit('set room', {'rom': data.nombreroom,'username':data.user});
+    });
+
+    /**
+     * cuando el cliente emite 'new message' este lo recibe y envia a todos en el room
+     */
+
+    socket.on('new message', function (data) {
+        // we tell the client to execute 'new message'
+        socket.broadcast.to(data.habitacion).emit('new message', {
+            username: socket.username,
+            message: data.message
+        });
+        saveMsg(data.message);
+    });
+
+    /**
+     * aqui se agrega el usuario al room que especifico antes en new game o join game, y se envia a todos dentro del room 'user joined'
+     */
+
+    socket.on('add user', function (data) {
+
+        // we store the username in the socket session for this client
+        socket.room = data.nombreroom;
+        socket.username = data.username;
+        ++numUsers;
+        addedUser = true;
+
+        socket.join(data.nombreroom);
+
+        socket.emit('login', {
+            numUsers: usuariosporrom[data.nombreroom]
+        });
+
+        // echo globally (all clients) that a person has connected
+        socket.broadcast.to(data.nombreroom).emit('user joined', {
+            username: socket.username,
+            numUsers: usuariosporrom[data.nombreroom]
+        });
+    });
+
+    /**
+     * funcion que guarda en la base de datos los mensajes de cada usuario
+     */
+
+    function saveMsg(data){
+        var newMsg = new Chat({from: socket.username, text: data,room:socket.room});
+        newMsg.save();
+    }
+
+    /**
+     * funcion que guarda en la base de datos a que room se unio cada usuario y si la accion ejecutada fue new o join
+     */
+
+    function saveRoom(data){
+        var newRoom= new Room({username:data.username,room:data.nombreroom,tipo:data.tipo});
+        newRoom.save();
+    }
+
+    /**
+     * cuando el cliente emite 'typing' se lo emitimos a todos dentro del room
+     */
+
+    socket.on('typing', function () {
+        socket.broadcast.to(socket.room).emit('typing', {
+            username: socket.username
+        });
+    });
+
+    /**
+     * cuando el cliente deja de escribir, 'stop typing', se lo emitimos a todos dentro del room
+     */
+
+    socket.on('stop typing', function () {
+        socket.broadcast.to(socket.room).emit('stop typing', {
+            username: socket.username
+        });
+    });
+
+    /**
+     * cuando el cliente se desconecta lo sacamos del room y emitimos a todos los usuarios que se fue
+     */
+
+    socket.on('disconnect', function () {
+
+        if (addedUser) {
+
+            var index = users.indexOf(socket.username);
+            users.splice(index,1);
+            usuariosporrom[socket.room]--;
+
+            // echo globally that this client has left
+            socket.broadcast.to(socket.room).emit('user left', {
+                username: socket.username,
+                numUsers: usuariosporrom[socket.room]
+            });
+            socket.leave(socket.room);
+        }
+    });
+
+    /**
+     * cuando el cliente se va del room pero usando el boton de salida, emitimos a todos los demas dentro del room que se fue pero ademas emitimos un 'sync-conect' para poder volver al lobby
+     */
+
+    socket.on('other-disconnect', function (data) {
+
+        usuariosporrom[socket.room]--;
+        var index = users.indexOf(socket.username);
+        users.splice(index,1);
+        // echo globally that this client has left
+        socket.broadcast.to(socket.room).emit('user left', {
+            username: socket.username,
+            numUsers: usuariosporrom[socket.room]
+        });
+        socket.leave(socket.room);
+
+        io.to(socket.id).emit('sync-conect', {'username': socket.username});
+    });
+
+});
+
+/**
+ * Normalize a port into a number, string, or false.
+ */
+
+function normalizePort(val) {
+    var port = parseInt(val, 10);
+
+    if (isNaN(port)) {
+        // named pipe
+        return val;
+    }
+
+    if (port >= 0) {
+        // port number
+        return port;
+    }
+
+    return false;
+}
+
+/**
+ * Event listener for HTTP server "error" event.
+ */
+
+function onError(error) {
+    if (error.syscall !== 'listen') {
+        throw error;
+    }
+
+    var bind = typeof port === 'string'
+        ? 'Pipe ' + port
+        : 'Port ' + port;
+
+    // handle specific listen errors with friendly messages
+    switch (error.code) {
+        case 'EACCES':
+            console.error(bind + ' requires elevated privileges');
+            process.exit(1);
+            break;
+        case 'EADDRINUSE':
+            console.error(bind + ' is already in use');
+            process.exit(1);
+            break;
+        default:
+            throw error;
+    }
+}
+
+/**
+ * Event listener for HTTP server "listening" event.
+ */
+
+
+function onListening() {
+    var addr = server.address();
+    var bind = typeof addr === 'string'
+        ? 'pipe ' + addr
+        : 'port ' + addr.port;
+    debug('Listening on ' + bind);
+}

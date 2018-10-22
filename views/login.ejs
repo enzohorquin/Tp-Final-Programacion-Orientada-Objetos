@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Login</title>
+    <link rel='stylesheet' href='/stylesheets/style2.css' />
+   <!-- <link href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.6/css/bootstrap.min.css" rel="stylesheet"> -->
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        var socket = io.connect('http://localhost:3000/usuarios');
+        socket.on('data', function (data) {
+            console.log(data.message);
+            socket.emit('new', {mess: 'hello'});
+        });
+    </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prefixfree/1.0.7/prefixfree.min.js"></script>
+</head>
+<body>
+<div class="login">
+    <h1>Login</h1>
+    <form action="/sessions" method="post">
+        <input type="text" name="email" placeholder="Email" id="email"required="required"/>
+        <input type="password" name="password" placeholder="Password" id="password" required="required" />
+        <input type="submit" value="Iniciar Sesion" class="btn btn-primary btn-block2 btn-large"/>
+        <a href="/signup" type="submit" class="btn btn-primary btn-block2 btn-large">No tengo cuenta</a>
+    </form>
+</div>
+</body>
+</html>
